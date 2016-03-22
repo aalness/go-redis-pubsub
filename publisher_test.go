@@ -13,7 +13,7 @@ func TestPublisherBasic(t *testing.T) {
 
 	count := 10
 	channels := []string{"foo", "bar", "hi"}
-	
+
 	// subscribe to all channels
 	for _, channel := range channels {
 		if err := <-s.Subscribe(channel); err != nil {
@@ -23,7 +23,7 @@ func TestPublisherBasic(t *testing.T) {
 
 	// publish 10 messages to each channel
 	var wg sync.WaitGroup
-	wg.Add(count*len(channels))
+	wg.Add(count * len(channels))
 	for _, channel := range channels {
 		for i := 0; i < count; i++ {
 			go func(channel string, i int) {
@@ -35,9 +35,9 @@ func TestPublisherBasic(t *testing.T) {
 		}
 	}
 	wg.Wait()
-	
+
 	// wait for all messages
-	h.waitForMessages(count*len(channels))
+	h.waitForMessages(count * len(channels))
 
 	// check the messages
 	for _, channel := range channels {
@@ -48,7 +48,7 @@ func TestPublisherBasic(t *testing.T) {
 			}
 		}
 	}
-	
+
 	s.Shutdown()
 	p.Shutdown()
 }

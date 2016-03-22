@@ -25,7 +25,7 @@ func NewRedisPublisher(poolSize int, address string) Publisher {
 	return &redisPublisher{
 		pool: &redis.Pool{
 			MaxIdle: poolSize,
-			Dial: func () (redis.Conn, error) {
+			Dial: func() (redis.Conn, error) {
 				conn, err := redis.Dial("tcp", address)
 				if err != nil {
 					return nil, err

@@ -23,9 +23,9 @@ type testHandler struct {
 
 func newTestHandler(t *testing.T) *testHandler {
 	return &testHandler{
-		t:        t,
-		messages: make(map[string]map[string]struct{}),
-		messageChan: make(chan struct{}, 10000),
+		t:               t,
+		messages:        make(map[string]map[string]struct{}),
+		messageChan:     make(chan struct{}, 10000),
 		unsubscribeChan: make(chan struct{}, 10000),
 	}
 }
