@@ -257,7 +257,7 @@ type redisSubscriber struct {
 }
 
 // NewRedisSubscriber ...
-func NewRedisSubscriber(poolSize int, address string, handler SubscriptionHandler) Subscriber {
+func NewRedisSubscriber(address string, handler SubscriptionHandler, poolSize int) Subscriber {
 	if poolSize == 0 {
 		poolSize = DefaultSubscriberPoolSize
 	}
