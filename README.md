@@ -1,7 +1,7 @@
 go-redis-pubsub
 ==================
 
-This library is a small specialized Go client for Redis pubsub. I'm using it to support real-time high-throughput messaging between server instances when the expected channel count is large and very dynamic.
+This library is a small specialized Go client for [Redis pub/sub](http://redis.io/topics/pubsub). I'm using it to support real-time high-throughput messaging between server instances when the expected channel count is large and very dynamic.
 
 It's implemented using [redigo](https://github.com/garyburd/redigo).
 
