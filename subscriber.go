@@ -54,7 +54,7 @@ type redisSubscriberConn struct {
 	subscriber *redisSubscriber
 	mutex      sync.Mutex
 	conn       *redis.PubSubConn
-	channels   map[string]int
+	counts     map[string]int
 	pending    map[string][]chan error
 	timers     map[string]context.CancelFunc
 }
@@ -65,32 +65,35 @@ func (c *redisSubscriberConn) subscribe(channel string) <-chan error {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	count, ok := 0, false
-	if count, ok = c.channels[channel]; ok {
+	if count, ok = c.counts[channel]; ok {
 		count++
-		c.channels[channel] = count
+		c.counts[channel] = count
 	} else {
 		count = 1
-		// cancel any existing unsubscribe timer for this channel
-		c.setUnsubscribeTimerLocked(channel, 0)
 	}
 	// add to the pending list
-	if list, ok := c.pending[channel]; ok {
+	if errChans, ok := c.pending[channel]; ok {
 		if count == 1 {
 			panic("pending list not empty")
 		}
-		list = append(list, errChan)
+		errChans = append(errChans, errChan)
 	} else {
 		// first subscriber
 		if count == 1 {
 			// add channel subscriber count
-			c.channels[channel] = count
+			c.counts[channel] = count
 			// add to pending list
 			c.pending[channel] = []chan error{errChan}
-			// send the SUBSCRIBE+FLUSH commands
-			if err := c.conn.Subscribe(channel); err != nil {
-				errChan <- err
-				delete(c.channels, channel)
-				delete(c.pending, channel)
+			if _, ok := c.timers[channel]; ok {
+				// cancel existing unsubscribe timer
+				c.setUnsubscribeTimerLocked(channel, 0)
+			} else {
+				// send the SUBSCRIBE+FLUSH commands
+				if err := c.conn.Subscribe(channel); err != nil {
+					errChan <- err
+					delete(c.counts, channel)
+					delete(c.pending, channel)
+				}
 			}
 		} else {
 			// already subscribed
@@ -105,14 +108,14 @@ func (c *redisSubscriberConn) unsubscribe(channel string) (int, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	count, ok := 0, false
-	if count, ok = c.channels[channel]; ok {
+	if count, ok = c.counts[channel]; ok {
 		if count--; count == 0 {
-			delete(c.channels, channel)
+			delete(c.counts, channel)
 			// start the unsubscribe timer for this channel
 			timeout := c.subscriber.handler.GetUnsubscribeTimeout()
 			c.setUnsubscribeTimerLocked(channel, timeout)
 		} else {
-			c.channels[channel] = count
+			c.counts[channel] = count
 		}
 	} else {
 		return 0, ErrNotSubscribed
@@ -140,7 +143,7 @@ func (c *redisSubscriberConn) setUnsubscribeTimerLocked(channel string, timeout 
 			err := func() error {
 				c.mutex.Lock()
 				defer c.mutex.Unlock()
-				if _, ok := c.channels[channel]; !ok {
+				if _, ok := c.counts[channel]; !ok {
 					// remove the cancel function for this channel
 					delete(c.timers, channel)
 					// send the UNSUBSCRIBE+FLUSH commands
@@ -179,7 +182,7 @@ func (c *redisSubscriberConn) receiveLoop() {
 				func() {
 					c.mutex.Lock()
 					defer c.mutex.Unlock()
-					for channel := range c.channels {
+					for channel := range c.counts {
 						channels = append(channels, channel)
 					}
 					// close the connection
@@ -226,8 +229,8 @@ func (c *redisSubscriberConn) close() {
 func (c *redisSubscriberConn) closeLocked() {
 	// close the connection
 	c.conn.Close()
-	// clear channels
-	c.channels = make(map[string]int)
+	// clear channel subscription counts
+	c.counts = make(map[string]int)
 	// cancel all timers
 	for _, cancel := range c.timers {
 		cancel()
@@ -272,11 +275,6 @@ func NewRedisSubscriber(poolSize int, address string, handler SubscriptionHandle
 }
 
 func (s *redisSubscriber) reconnectSlot(slot int) {
-	// don't reconnect if shutting down
-	if s.isShutdown() {
-		return
-	}
-
 	// connect. todo: let handler specify backoff parameters
 	expBackoff := backoff.NewExponentialBackOff()
 	// don't quit trying
@@ -284,6 +282,10 @@ func (s *redisSubscriber) reconnectSlot(slot int) {
 
 	var conn redis.Conn
 	err := backoff.RetryNotify(func() error {
+		// quit reconnecting if shutting down
+		if s.isShutdown() {
+			return nil
+		}
 		var err error
 		conn, err = redis.Dial("tcp", s.address)
 		return err
@@ -294,12 +296,16 @@ func (s *redisSubscriber) reconnectSlot(slot int) {
 		panic(err)
 	}
 
+	if s.isShutdown() {
+		return
+	}
+
 	// create the connection
 	connection := &redisSubscriberConn{
 		slot:       slot,
 		subscriber: s,
 		conn:       &redis.PubSubConn{Conn: conn},
-		channels:   make(map[string]int),
+		counts:     make(map[string]int),
 		pending:    make(map[string][]chan error),
 		timers:     make(map[string]context.CancelFunc),
 	}
