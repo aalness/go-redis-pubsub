@@ -21,7 +21,7 @@ const DefaultSubscriberPoolSize = 16
 // Subscriber ...
 type Subscriber interface {
 	// Subscribe ...
-	Subscribe(channel string) (count int, err error)
+	Subscribe(channel string) <-chan error
 	// Unsubscribe ...
 	Unsubscribe(channel string) (count int, err error)
 	// Shutdown ...
@@ -55,11 +55,13 @@ type redisSubscriberConn struct {
 	mutex      sync.Mutex
 	conn       *redis.PubSubConn
 	channels   map[string]int
+	pending    map[string][]chan error
 	timers     map[string]context.CancelFunc
 }
 
 // subscribe subscribers to a new channel and/or increments its channel subscription counter.
-func (c *redisSubscriberConn) subscribe(channel string) (int, error) {
+func (c *redisSubscriberConn) subscribe(channel string) <-chan error {
+	errChan := make(chan error, 1)
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	count, ok := 0, false
@@ -67,16 +69,35 @@ func (c *redisSubscriberConn) subscribe(channel string) (int, error) {
 		count++
 		c.channels[channel] = count
 	} else {
-		// send the SUBSCRIBE+FLUSH commands
-		if err := c.conn.Subscribe(channel); err != nil {
-			return 0, err
-		}
 		count = 1
-		c.channels[channel] = count
 		// cancel any existing unsubscribe timer for this channel
 		c.setUnsubscribeTimerLocked(channel, 0)
 	}
-	return count, nil
+	// add to the pending list
+	if list, ok := c.pending[channel]; ok {
+		if count == 1 {
+			panic("pending list not empty")
+		}
+		list = append(list, errChan)
+	} else {
+		// first subscriber
+		if count == 1 {
+			// add channel subscriber count
+			c.channels[channel] = count
+			// add to pending list
+			c.pending[channel] = []chan error{errChan}
+			// send the SUBSCRIBE+FLUSH commands
+			if err := c.conn.Subscribe(channel); err != nil {
+				errChan <- err
+				delete(c.channels, channel)
+				delete(c.pending, channel)
+			}
+		} else {
+			// already subscribed
+			errChan <- nil
+		}
+	}
+	return errChan
 }
 
 // unsubscribe decrements its connection counter; on 0 count an unsubscribe timer is started.
@@ -177,6 +198,17 @@ func (c *redisSubscriberConn) receiveLoop() {
 		case redis.Subscription:
 			// notify handler of new subscription event
 			if msg.Kind == "subscribe" {
+				func() {
+					// send signal for all pending subscriptions to this channel
+					c.mutex.Lock()
+					defer c.mutex.Unlock()
+					if chans, ok := c.pending[msg.Channel]; ok {
+						for _, errChan := range chans {
+							errChan <- nil
+						}
+					}
+					delete(c.pending, msg.Channel)
+				}()
 				c.subscriber.handler.OnSubscribe(msg.Channel, msg.Count)
 			} else if msg.Kind == "unsubscribe" {
 				c.subscriber.handler.OnUnsubscribe(msg.Channel, msg.Count)
@@ -201,6 +233,13 @@ func (c *redisSubscriberConn) closeLocked() {
 		cancel()
 	}
 	c.timers = make(map[string]context.CancelFunc)
+	// send error signal for all pending subscriptions
+	for _, chans := range c.pending {
+		for _, errChan := range chans {
+			errChan <- io.EOF
+		}
+	}
+	c.pending = make(map[string][]chan error)
 }
 
 // redisSubscriber ...
@@ -214,8 +253,7 @@ type redisSubscriber struct {
 }
 
 // NewRedisSubscriber ...
-func NewRedisSubscriber(poolSize int, address string, handler SubscriptionHandler) (
-	Subscriber, error) {
+func NewRedisSubscriber(poolSize int, address string, handler SubscriptionHandler) Subscriber {
 	if poolSize == 0 {
 		poolSize = DefaultSubscriberPoolSize
 	}
@@ -230,7 +268,7 @@ func NewRedisSubscriber(poolSize int, address string, handler SubscriptionHandle
 	for slot := 0; slot < poolSize; slot++ {
 		subscriber.reconnectSlot(slot)
 	}
-	return subscriber, nil
+	return subscriber
 }
 
 func (s *redisSubscriber) reconnectSlot(slot int) {
@@ -262,6 +300,7 @@ func (s *redisSubscriber) reconnectSlot(slot int) {
 		subscriber: s,
 		conn:       &redis.PubSubConn{Conn: conn},
 		channels:   make(map[string]int),
+		pending:    make(map[string][]chan error),
 		timers:     make(map[string]context.CancelFunc),
 	}
 	func() {
@@ -284,7 +323,7 @@ func (s *redisSubscriber) getSlot(channel string) int {
 }
 
 // Subscribe ...
-func (s *redisSubscriber) Subscribe(channel string) (int, error) {
+func (s *redisSubscriber) Subscribe(channel string) <-chan error {
 	slot := s.getSlot(channel)
 	s.slotMutexes[slot].RLock()
 	defer s.slotMutexes[slot].RUnlock()
@@ -301,14 +340,14 @@ func (s *redisSubscriber) Unsubscribe(channel string) (int, error) {
 
 func (s *redisSubscriber) isShutdown() bool {
 	s.shutdownMutex.Lock()
-	defer s.shutdownMutex.Lock()
+	defer s.shutdownMutex.Unlock()
 	return s.shutdown
 }
 
 // Shutdown ...
 func (s *redisSubscriber) Shutdown() {
 	s.shutdownMutex.Lock()
-	defer s.shutdownMutex.Lock()
+	defer s.shutdownMutex.Unlock()
 	s.shutdown = true
 	for _, conn := range s.slots {
 		conn.close()
