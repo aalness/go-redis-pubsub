@@ -82,5 +82,52 @@ func TestSubscriberBasic(t *testing.T) {
 		t.Fatalf("Exepected 1 subscription, got %d", h.subscribeCount)
 	}
 
+	if count, err := s.Unsubscribe("foo"); err != nil {
+		t.Fatal(err)
+	} else {
+		// expect one more subscriber left
+		if count != 1 {
+			t.Fatalf("Exepected 1 subscriber, got %d", count)
+		}
+	}
+	if count, err := s.Unsubscribe("foo"); err != nil {
+		t.Fatal(err)
+	} else {
+		// no more expected
+		if count != 0 {
+			t.Fatalf("Exepected 0 subscribers, got %d", count)
+		}
+	}
+	// shouldn't be subscribed anymore
+	if _, err := s.Unsubscribe("foo"); err != ErrNotSubscribed {
+		t.Fatalf("Expected ErrNotSubscribed, got: %v", err)
+	}
+
+	// let the timeout trigger
+	time.Sleep(h.GetUnsubscribeTimeout() * 10)
+
+	// subscribe to foo again
+	if err := <-s.Subscribe("foo"); err != nil {
+		t.Fatal(err)
+	}
+	// expect 2 subscribes now
+	if h.subscribeCount != 2 {
+		t.Fatalf("Exepected 2 subscriptions, got %d", h.subscribeCount)
+	}
+
+	// subscribe to bar
+	if err := <-s.Subscribe("bar"); err != nil {
+		t.Fatal(err)
+	}
+	// expect 3 subscribes now
+	if h.subscribeCount != 3 {
+		t.Fatalf("Exepected 3 subscriptions, got %d", h.subscribeCount)
+	}
+
+	// just the one unsubscribe expected
+	if h.unsubscribeCount != 1 {
+		t.Fatalf("Exepected 1 unsubscription, got %d", h.unsubscribeCount)
+	}
+
 	s.Shutdown()
 }
