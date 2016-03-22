@@ -252,7 +252,7 @@ type redisSubscriber struct {
 	handler       SubscriptionHandler
 	slotMutexes   []sync.RWMutex
 	slots         []*redisSubscriberConn
-	shutdownMutex sync.Mutex
+	shutdownMutex sync.RWMutex
 	shutdown      bool
 }
 
@@ -297,7 +297,13 @@ func (s *redisSubscriber) reconnectSlot(slot int) {
 		panic(err)
 	}
 
-	if s.isShutdown() {
+	// prevent respawning a receive loop
+	s.shutdownMutex.RLock()
+	defer s.shutdownMutex.RUnlock()
+	if s.shutdown {
+		if conn != nil {
+			conn.Close()
+		}
 		return
 	}
 
@@ -346,8 +352,8 @@ func (s *redisSubscriber) Unsubscribe(channel string) (int, error) {
 }
 
 func (s *redisSubscriber) isShutdown() bool {
-	s.shutdownMutex.Lock()
-	defer s.shutdownMutex.Unlock()
+	s.shutdownMutex.RLock()
+	defer s.shutdownMutex.RUnlock()
 	return s.shutdown
 }
 
