@@ -67,10 +67,11 @@ func (c *redisSubscriberConn) subscribe(channel string) <-chan error {
 	count, ok := 0, false
 	if count, ok = c.counts[channel]; ok {
 		count++
-		c.counts[channel] = count
 	} else {
 		count = 1
 	}
+	// update subscriber count
+	c.counts[channel] = count
 	// add to the pending list
 	if errChans, ok := c.pending[channel]; ok {
 		if count == 1 {
@@ -80,14 +81,14 @@ func (c *redisSubscriberConn) subscribe(channel string) <-chan error {
 	} else {
 		// first subscriber
 		if count == 1 {
-			// add channel subscriber count
-			c.counts[channel] = count
-			// add to pending list
-			c.pending[channel] = []chan error{errChan}
 			if _, ok := c.timers[channel]; ok {
 				// cancel existing unsubscribe timer
 				c.setUnsubscribeTimerLocked(channel, 0)
+				// already subscribed
+				errChan <- nil
 			} else {
+				// add to pending list
+				c.pending[channel] = []chan error{errChan}
 				// send the SUBSCRIBE+FLUSH commands
 				if err := c.conn.Subscribe(channel); err != nil {
 					errChan <- err
