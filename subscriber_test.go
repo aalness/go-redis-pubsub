@@ -8,7 +8,7 @@ import (
 	"github.com/garyburd/redigo/redis"
 )
 
-type TestHandler struct {
+type testHandler struct {
 	t                  *testing.T
 	mutex              sync.Mutex
 	unsubscribeErrors  int
@@ -16,59 +16,102 @@ type TestHandler struct {
 	disconnectedErrors int
 	subscribeCount     int
 	unsubscribeCount   int
-	messages           map[string]string
+	messages           map[string]map[string]struct{}
+	messageChan        chan struct{}
+	unsubscribeChan    chan struct{}
 }
 
-func (h *TestHandler) OnConnectError(err error, nextTime time.Duration) {
+func newTestHandler(t *testing.T) *testHandler {
+	return &testHandler{
+		t:        t,
+		messages: make(map[string]map[string]struct{}),
+		messageChan: make(chan struct{}, 10000),
+		unsubscribeChan: make(chan struct{}, 10000),
+	}
+}
+
+func (h *testHandler) OnConnectError(err error, nextTime time.Duration) {
 	h.t.Fatal(err)
 }
 
-func (h *TestHandler) OnSubscribe(channel string, count int) {
+func (h *testHandler) OnSubscribe(channel string, count int) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	h.subscribeCount++
 }
 
-func (h *TestHandler) OnUnsubscribe(channel string, count int) {
+func (h *testHandler) OnUnsubscribe(channel string, count int) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	h.unsubscribeCount++
+	h.unsubscribeChan <- struct{}{}
 }
 
-func (h *TestHandler) OnMessage(channel string, data []byte) {
+func (h *testHandler) OnMessage(channel string, data []byte) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	message, _ := redis.String(data, nil)
-	h.messages[channel] = message
+	messages, ok := h.messages[channel]
+	if !ok {
+		messages = make(map[string]struct{})
+		h.messages[channel] = messages
+	}
+	messages[message] = struct{}{}
+	h.messageChan <- struct{}{}
 }
 
-func (h *TestHandler) OnUnsubscribeError(channel string, err error) {
+func (h *testHandler) OnUnsubscribeError(channel string, err error) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	h.unsubscribeErrors++
 }
 
-func (h *TestHandler) OnReceiveError(err error) {
+func (h *testHandler) OnReceiveError(err error) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	h.receiveErrors++
 }
 
-func (h *TestHandler) OnDisconnected(err error, channels []string) {
+func (h *testHandler) OnDisconnected(err error, channels []string) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	h.disconnectedErrors++
 }
 
-func (h *TestHandler) GetUnsubscribeTimeout() time.Duration {
+func (h *testHandler) GetUnsubscribeTimeout() time.Duration {
 	return 1 * time.Millisecond
 }
 
-func TestSubscriberBasic(t *testing.T) {
-	h := &TestHandler{
-		t:        t,
-		messages: make(map[string]string),
+func (h *testHandler) waitForMessages(count int) {
+	seen := 0
+	for {
+		select {
+		case <-h.messageChan:
+			if seen++; seen == count {
+				return
+			}
+		case <-time.After(30 * time.Second):
+			h.t.Fatal("Timed out waiting for messages")
+		}
 	}
+}
+
+func (h *testHandler) waitForUnsubscribes(count int) {
+	seen := 0
+	for {
+		select {
+		case <-h.unsubscribeChan:
+			if seen++; seen == count {
+				return
+			}
+		case <-time.After(30 * time.Second):
+			h.t.Fatal("Timed out waiting for unsubscribes")
+		}
+	}
+}
+
+func TestSubscriberBasic(t *testing.T) {
+	h := newTestHandler(t)
 	s := NewRedisSubscriber(0, "localhost:6379", h)
 
 	if err := <-s.Subscribe("foo"); err != nil {
@@ -103,8 +146,7 @@ func TestSubscriberBasic(t *testing.T) {
 		t.Fatalf("Expected ErrNotSubscribed, got: %v", err)
 	}
 
-	// let the timeout trigger
-	time.Sleep(h.GetUnsubscribeTimeout() * 10)
+	h.waitForUnsubscribes(1)
 
 	// subscribe to foo again
 	if err := <-s.Subscribe("foo"); err != nil {
