@@ -7,24 +7,28 @@ import (
 	"github.com/garyburd/redigo/redis"
 )
 
-// ErrPublishWouldBlock ...
+// ErrPublishWouldBlock is returned when the outgoing message buffer is full.
 var ErrPublishWouldBlock = errors.New("Publish would block")
 
-// DefaultPublisherPoolSize ...
+// DefaultPublisherPoolSize is the default size of the worker pool.
 const DefaultPublisherPoolSize = 16
 
-// DefaultPublisherBufferSize ...
+// DefaultPublisherBufferSize is the default size of the outgoing message buffer.
 const DefaultPublisherBufferSize = 1 << 20
 
-// Publisher ...
+// Publisher is an interface to a publisher imlementation. This library implements it with Redis.
 type Publisher interface {
+	// Publish is called to publish the given message to the given channel.
 	Publish(channel string, data []byte)
+	// Shutdown is called to synchronously stop all publishing activity.
 	Shutdown()
 }
 
-// PublicationHandler ...
+// PublicationHandler is an interface for receiving notification of publisher events.
 type PublicationHandler interface {
+	// OnConnect is called upon each successful connection.
 	OnConnect(conn redis.Conn, address string)
+	// OnPublishError is called upon any error when attempting to publish a message.
 	OnPublishError(err error, channel string, data []byte)
 }
 
@@ -40,7 +44,7 @@ type redisPublisher struct {
 	wg       sync.WaitGroup
 }
 
-// NewRedisPublisher ...
+// NewRedisPublisher instantiates a Publisher implementation backed by Redis.
 func NewRedisPublisher(address string, handler PublicationHandler, poolSize, bufferSize int) Publisher {
 	if poolSize == 0 {
 		poolSize = DefaultPublisherPoolSize
@@ -84,7 +88,7 @@ func (p *redisPublisher) publishLoop() {
 	p.wg.Done()
 }
 
-// Publish ...
+// Publish implements the Publisher interface.
 func (p *redisPublisher) Publish(channel string, data []byte) {
 	select {
 	case p.messages <- &message{channel: channel, data: data}:
@@ -93,7 +97,7 @@ func (p *redisPublisher) Publish(channel string, data []byte) {
 	}
 }
 
-// Shutdown ...
+// Shutdown implements the Publisher interface.
 func (p *redisPublisher) Shutdown() {
 	close(p.messages)
 	p.pool.Close()

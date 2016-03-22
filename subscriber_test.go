@@ -11,6 +11,7 @@ import (
 type testSubHandler struct {
 	t                  *testing.T
 	mutex              sync.Mutex
+	connections        int
 	unsubscribeErrors  int
 	receiveErrors      int
 	disconnectedErrors int
@@ -28,6 +29,12 @@ func newTestSubHandler(t *testing.T) *testSubHandler {
 		messageChan:     make(chan struct{}, 10000),
 		unsubscribeChan: make(chan struct{}, 10000),
 	}
+}
+
+func (h *testSubHandler) OnConnect(conn redis.Conn, address string) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	h.connections++
 }
 
 func (h *testSubHandler) OnConnectError(err error, nextTime time.Duration) {
@@ -169,6 +176,10 @@ func TestSubscriberBasic(t *testing.T) {
 	// just the one unsubscribe expected
 	if h.unsubscribeCount != 1 {
 		t.Fatalf("Exepected 1 unsubscription, got %d", h.unsubscribeCount)
+	}
+
+	if h.connections != DefaultSubscriberPoolSize {
+		t.Fatalf("Expected %d connections, got: %d", DefaultSubscriberPoolSize, h.connections)
 	}
 
 	s.Shutdown()

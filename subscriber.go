@@ -12,43 +12,46 @@ import (
 	"golang.org/x/net/context"
 )
 
-// ErrNotSubscribed ...
+// ErrNotSubscribed is returned when an unsubscribe request is received for an unsubscribed channel.
 var ErrNotSubscribed = errors.New("Not subscribed")
 
-// DefaultSubscriberPoolSize ...
+// DefaultSubscriberPoolSize is the default subscription worker pool size.
 const DefaultSubscriberPoolSize = 16
 
-// Subscriber ...
+// Subscriber is an interface to a subscriber implementation. This library implements it with Redis.
 type Subscriber interface {
-	// Subscribe ...
+	// Subscribe is called to subscribe for messages broadcast on the given channel.
 	Subscribe(channel string) <-chan error
-	// Unsubscribe ...
+	// Unsubscribe is called to unsubscribe from the given channel.
 	Unsubscribe(channel string) (count int, err error)
-	// Shutdown ...
+	// Shutdown is called to close all connections.
 	Shutdown()
 }
 
-// SubscriptionHandler ...
+// SubscriptionHandler is an interface for receiving notification of subscriber events.
 type SubscriptionHandler interface {
-	// OnConnectError ...
+	// OnConnect is called upon each successful connection.
+	OnConnect(conn redis.Conn, address string)
+	// OnConnectError is called whenever there is an error connecting.
 	OnConnectError(err error, nextTime time.Duration)
-	// OnSubscribe ...
+	// OnSubscribe is called upon successful channel subscription.
 	OnSubscribe(channel string, count int)
-	// OnUnsubscribe ...
+	// OnUnsubscribe is called upon successful unsubscription from a channel.
 	OnUnsubscribe(channel string, count int)
-	// OnMessage ...
+	// OnMessage is called whenever a message is broadcast on a channel a subscriber subscribes to.
 	OnMessage(channel string, data []byte)
-	// OnUnsubscribeError ...
+	// OnUnsubscribeError is called in the event of an unsubscription error.
 	OnUnsubscribeError(channel string, err error)
-	// OnReceiveError ...
+	// OnReceiveError is called for any non-fatal error received.
 	OnReceiveError(err error)
-	// OnDisconnected ...
+	// OnDisconnected is called whenever a connection is disconnected.
+	// "channels" contains the list of channels this connection was subscribed to at the time.
 	OnDisconnected(err error, channels []string)
-	// GetUnsubscribeTimeout ...
+	// GetUnsubscribeTimeout returns how long the implementation should wait prior to unsubscribing
+	// from a channel after the subscriber count drops to 0.
 	GetUnsubscribeTimeout() time.Duration
 }
 
-// redisSubscriberConn implements a subscriber connection with redis.
 type redisSubscriberConn struct {
 	slot       int
 	subscriber *redisSubscriber
@@ -59,7 +62,6 @@ type redisSubscriberConn struct {
 	timers     map[string]context.CancelFunc
 }
 
-// subscribe subscribers to a new channel and/or increments its channel subscription counter.
 func (c *redisSubscriberConn) subscribe(channel string) <-chan error {
 	errChan := make(chan error, 1)
 	c.mutex.Lock()
@@ -104,7 +106,6 @@ func (c *redisSubscriberConn) subscribe(channel string) <-chan error {
 	return errChan
 }
 
-// unsubscribe decrements its connection counter; on 0 count an unsubscribe timer is started.
 func (c *redisSubscriberConn) unsubscribe(channel string) (int, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -246,7 +247,6 @@ func (c *redisSubscriberConn) closeLocked() {
 	c.pending = make(map[string][]chan error)
 }
 
-// redisSubscriber ...
 type redisSubscriber struct {
 	address       string
 	handler       SubscriptionHandler
@@ -256,7 +256,7 @@ type redisSubscriber struct {
 	shutdown      bool
 }
 
-// NewRedisSubscriber ...
+// NewRedisSubscriber instantiates a Subscriber implementation backed by Redis.
 func NewRedisSubscriber(address string, handler SubscriptionHandler, poolSize int) Subscriber {
 	if poolSize == 0 {
 		poolSize = DefaultSubscriberPoolSize
@@ -268,7 +268,7 @@ func NewRedisSubscriber(address string, handler SubscriptionHandler, poolSize in
 		slotMutexes: make([]sync.RWMutex, poolSize),
 		slots:       make([]*redisSubscriberConn, poolSize),
 	}
-	// connect
+	// connect the slots
 	for slot := 0; slot < poolSize; slot++ {
 		subscriber.reconnectSlot(slot)
 	}
@@ -289,6 +289,9 @@ func (s *redisSubscriber) reconnectSlot(slot int) {
 		}
 		var err error
 		conn, err = redis.Dial("tcp", s.address)
+		if err == nil {
+			s.handler.OnConnect(conn, s.address)
+		}
 		return err
 	}, expBackoff, s.handler.OnConnectError)
 
@@ -327,6 +330,12 @@ func (s *redisSubscriber) reconnectSlot(slot int) {
 	go connection.receiveLoop()
 }
 
+func (s *redisSubscriber) isShutdown() bool {
+	s.shutdownMutex.RLock()
+	defer s.shutdownMutex.RUnlock()
+	return s.shutdown
+}
+
 func (s *redisSubscriber) getSlot(channel string) int {
 	// attempt to evenly spread channels over available connections.
 	// this mitigates the impact of a single disconnection and spreads load.
@@ -335,7 +344,7 @@ func (s *redisSubscriber) getSlot(channel string) int {
 	return int(h.Sum32() % uint32(len(s.slots)))
 }
 
-// Subscribe ...
+// Subscribe implements the Subscriber interface.
 func (s *redisSubscriber) Subscribe(channel string) <-chan error {
 	slot := s.getSlot(channel)
 	s.slotMutexes[slot].RLock()
@@ -343,7 +352,7 @@ func (s *redisSubscriber) Subscribe(channel string) <-chan error {
 	return s.slots[slot].subscribe(channel)
 }
 
-// Unsubscribe ...
+// Unsubscribe implements the Subscriber interface.
 func (s *redisSubscriber) Unsubscribe(channel string) (int, error) {
 	slot := s.getSlot(channel)
 	s.slotMutexes[slot].RLock()
@@ -351,13 +360,7 @@ func (s *redisSubscriber) Unsubscribe(channel string) (int, error) {
 	return s.slots[slot].unsubscribe(channel)
 }
 
-func (s *redisSubscriber) isShutdown() bool {
-	s.shutdownMutex.RLock()
-	defer s.shutdownMutex.RUnlock()
-	return s.shutdown
-}
-
-// Shutdown ...
+// Shutdown implements the Subscriber interface.
 func (s *redisSubscriber) Shutdown() {
 	s.shutdownMutex.Lock()
 	defer s.shutdownMutex.Unlock()
