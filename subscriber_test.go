@@ -79,7 +79,7 @@ func (h *testSubHandler) OnReceiveError(err error) {
 	h.receiveErrors++
 }
 
-func (h *testSubHandler) OnDisconnected(err error, channels []string) {
+func (h *testSubHandler) OnDisconnected(err error, slot int, channels []string) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	h.disconnectedErrors++
