@@ -24,6 +24,8 @@ type Subscriber interface {
 	Subscribe(channel string) <-chan error
 	// Unsubscribe is called to unsubscribe from the given channel.
 	Unsubscribe(channel string) (count int, err error)
+	// GetSlot returns the slot number for the given channel.
+	GetSlot(channel string) int
 	// Shutdown is called to close all connections.
 	Shutdown()
 }
@@ -31,7 +33,7 @@ type Subscriber interface {
 // SubscriptionHandler is an interface for receiving notification of subscriber events.
 type SubscriptionHandler interface {
 	// OnConnect is called upon each successful connection.
-	OnConnect(conn redis.Conn, address string)
+	OnConnect(s Subscriber, conn redis.Conn, address string, slot int)
 	// OnConnectError is called whenever there is an error connecting.
 	OnConnectError(err error, nextTime time.Duration)
 	// OnSubscribe is called upon successful channel subscription.
@@ -268,7 +270,6 @@ func NewRedisSubscriber(address string, handler SubscriptionHandler, poolSize in
 		slotMutexes: make([]sync.RWMutex, poolSize),
 		slots:       make([]*redisSubscriberConn, poolSize),
 	}
-	// connect the slots
 	for slot := 0; slot < poolSize; slot++ {
 		subscriber.reconnectSlot(slot)
 	}
@@ -290,7 +291,7 @@ func (s *redisSubscriber) reconnectSlot(slot int) {
 		var err error
 		conn, err = redis.Dial("tcp", s.address)
 		if err == nil {
-			s.handler.OnConnect(conn, s.address)
+			s.handler.OnConnect(s, conn, s.address, slot)
 		}
 		return err
 	}, expBackoff, s.handler.OnConnectError)
@@ -336,7 +337,8 @@ func (s *redisSubscriber) isShutdown() bool {
 	return s.shutdown
 }
 
-func (s *redisSubscriber) getSlot(channel string) int {
+// GetSlot implements the Subscriber interface.
+func (s *redisSubscriber) GetSlot(channel string) int {
 	// attempt to evenly spread channels over available connections.
 	// this mitigates the impact of a single disconnection and spreads load.
 	h := fnv.New32a()
@@ -346,7 +348,7 @@ func (s *redisSubscriber) getSlot(channel string) int {
 
 // Subscribe implements the Subscriber interface.
 func (s *redisSubscriber) Subscribe(channel string) <-chan error {
-	slot := s.getSlot(channel)
+	slot := s.GetSlot(channel)
 	s.slotMutexes[slot].RLock()
 	defer s.slotMutexes[slot].RUnlock()
 	return s.slots[slot].subscribe(channel)
@@ -354,7 +356,7 @@ func (s *redisSubscriber) Subscribe(channel string) <-chan error {
 
 // Unsubscribe implements the Subscriber interface.
 func (s *redisSubscriber) Unsubscribe(channel string) (int, error) {
-	slot := s.getSlot(channel)
+	slot := s.GetSlot(channel)
 	s.slotMutexes[slot].RLock()
 	defer s.slotMutexes[slot].RUnlock()
 	return s.slots[slot].unsubscribe(channel)

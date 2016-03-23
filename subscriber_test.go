@@ -31,7 +31,7 @@ func newTestSubHandler(t *testing.T) *testSubHandler {
 	}
 }
 
-func (h *testSubHandler) OnConnect(conn redis.Conn, address string) {
+func (h *testSubHandler) OnConnect(s Subscriber, conn redis.Conn, address string, slot int) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	h.connections++
