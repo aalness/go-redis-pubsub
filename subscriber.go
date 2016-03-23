@@ -4,6 +4,7 @@ import (
 	"errors"
 	"hash/fnv"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -173,6 +174,9 @@ func (c *redisSubscriberConn) isDisconnectError(err error) bool {
 	case io.ErrClosedPipe:
 		return true
 	default:
+		if strings.HasSuffix(err.Error(), "use of closed network connection") {
+			return true
+		}
 		return false
 	}
 }
