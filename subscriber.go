@@ -290,9 +290,6 @@ func (s *redisSubscriber) reconnectSlot(slot int) {
 		}
 		var err error
 		conn, err = redis.Dial("tcp", s.address)
-		if err == nil {
-			s.handler.OnConnect(s, conn, s.address, slot)
-		}
 		return err
 	}, expBackoff, s.handler.OnConnectError)
 
@@ -326,6 +323,9 @@ func (s *redisSubscriber) reconnectSlot(slot int) {
 		defer s.slotMutexes[slot].Unlock()
 		s.slots[slot] = connection
 	}()
+
+	// call the callback
+	s.handler.OnConnect(s, conn, s.address, slot)
 
 	// start the receive loop
 	go connection.receiveLoop()
