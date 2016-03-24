@@ -31,13 +31,14 @@ func newTestSubHandler(t *testing.T) *testSubHandler {
 	}
 }
 
-func (h *testSubHandler) OnConnect(s Subscriber, conn redis.Conn, address string, slot int) {
+func (h *testSubHandler) OnSubscriberConnect(s Subscriber,
+	conn redis.Conn, address string, slot int) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	h.connections++
 }
 
-func (h *testSubHandler) OnConnectError(err error, nextTime time.Duration) {
+func (h *testSubHandler) OnSubscriberConnectError(err error, nextTime time.Duration) {
 	h.t.Fatal(err)
 }
 
@@ -132,7 +133,7 @@ func TestSubscriberBasic(t *testing.T) {
 		t.Fatalf("Exepected 1 subscription, got %d", h.subscribeCount)
 	}
 
-	if count, err := s.Unsubscribe("foo"); err != nil {
+	if count, err := s.Unsubscribe("foo", 1); err != nil {
 		t.Fatal(err)
 	} else {
 		// expect one more subscriber left
@@ -140,7 +141,7 @@ func TestSubscriberBasic(t *testing.T) {
 			t.Fatalf("Exepected 1 subscriber, got %d", count)
 		}
 	}
-	if count, err := s.Unsubscribe("foo"); err != nil {
+	if count, err := s.Unsubscribe("foo", 1); err != nil {
 		t.Fatal(err)
 	} else {
 		// no more expected
@@ -149,7 +150,7 @@ func TestSubscriberBasic(t *testing.T) {
 		}
 	}
 	// shouldn't be subscribed anymore
-	if _, err := s.Unsubscribe("foo"); err != ErrNotSubscribed {
+	if _, err := s.Unsubscribe("foo", 1); err != ErrNotSubscribed {
 		t.Fatalf("Expected ErrNotSubscribed, got: %v", err)
 	}
 

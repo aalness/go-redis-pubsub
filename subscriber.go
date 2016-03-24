@@ -24,7 +24,7 @@ type Subscriber interface {
 	// Subscribe is called to subscribe for messages broadcast on the given channel.
 	Subscribe(channel string) <-chan error
 	// Unsubscribe is called to unsubscribe from the given channel.
-	Unsubscribe(channel string) (count int, err error)
+	Unsubscribe(channel string, count int) (currentCount int, err error)
 	// GetSlot returns the slot number for the given channel.
 	GetSlot(channel string) int
 	// Shutdown is called to close all connections.
@@ -33,10 +33,10 @@ type Subscriber interface {
 
 // SubscriptionHandler is an interface for receiving notification of subscriber events.
 type SubscriptionHandler interface {
-	// OnConnect is called upon each successful connection.
-	OnConnect(s Subscriber, conn redis.Conn, address string, slot int)
-	// OnConnectError is called whenever there is an error connecting.
-	OnConnectError(err error, nextTime time.Duration)
+	// OnSubscriberConnect is called upon each successful connection.
+	OnSubscriberConnect(s Subscriber, conn redis.Conn, address string, slot int)
+	// OnSubscriberConnectError is called whenever there is an error connecting.
+	OnSubscriberConnectError(err error, nextTime time.Duration)
 	// OnSubscribe is called upon successful channel subscription.
 	OnSubscribe(channel string, count int)
 	// OnUnsubscribe is called upon successful unsubscription from a channel.
@@ -109,23 +109,24 @@ func (c *redisSubscriberConn) subscribe(channel string) <-chan error {
 	return errChan
 }
 
-func (c *redisSubscriberConn) unsubscribe(channel string) (int, error) {
+func (c *redisSubscriberConn) unsubscribe(channel string, count int) (int, error) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
-	count, ok := 0, false
-	if count, ok = c.counts[channel]; ok {
-		if count--; count == 0 {
+	currentCount, ok := 0, false
+	if currentCount, ok = c.counts[channel]; ok {
+		currentCount -= count
+		if currentCount == 0 {
 			delete(c.counts, channel)
 			// start the unsubscribe timer for this channel
 			timeout := c.subscriber.handler.GetUnsubscribeTimeout()
 			c.setUnsubscribeTimerLocked(channel, timeout)
 		} else {
-			c.counts[channel] = count
+			c.counts[channel] = currentCount
 		}
 	} else {
 		return 0, ErrNotSubscribed
 	}
-	return count, nil
+	return currentCount, nil
 }
 
 func (c *redisSubscriberConn) setUnsubscribeTimerLocked(channel string, timeout time.Duration) {
@@ -295,7 +296,7 @@ func (s *redisSubscriber) reconnectSlot(slot int) {
 		var err error
 		conn, err = redis.Dial("tcp", s.address)
 		return err
-	}, expBackoff, s.handler.OnConnectError)
+	}, expBackoff, s.handler.OnSubscriberConnectError)
 
 	// shouldn't be possible
 	if err != nil {
@@ -329,7 +330,7 @@ func (s *redisSubscriber) reconnectSlot(slot int) {
 	}()
 
 	// call the callback
-	s.handler.OnConnect(s, conn, s.address, slot)
+	s.handler.OnSubscriberConnect(s, conn, s.address, slot)
 
 	// start the receive loop
 	go connection.receiveLoop()
@@ -359,11 +360,11 @@ func (s *redisSubscriber) Subscribe(channel string) <-chan error {
 }
 
 // Unsubscribe implements the Subscriber interface.
-func (s *redisSubscriber) Unsubscribe(channel string) (int, error) {
+func (s *redisSubscriber) Unsubscribe(channel string, count int) (int, error) {
 	slot := s.GetSlot(channel)
 	s.slotMutexes[slot].RLock()
 	defer s.slotMutexes[slot].RUnlock()
-	return s.slots[slot].unsubscribe(channel)
+	return s.slots[slot].unsubscribe(channel, count)
 }
 
 // Shutdown implements the Subscriber interface.
