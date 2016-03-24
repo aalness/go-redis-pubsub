@@ -14,7 +14,7 @@ type testPubHandler struct {
 	connections int
 }
 
-func (h *testPubHandler) OnConnect(conn redis.Conn, address string) {
+func (h *testPubHandler) OnPublishConnect(conn redis.Conn, address string) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	h.connections++

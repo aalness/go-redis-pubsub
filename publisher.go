@@ -26,8 +26,8 @@ type Publisher interface {
 
 // PublicationHandler is an interface for receiving notification of publisher events.
 type PublicationHandler interface {
-	// OnConnect is called upon each successful connection.
-	OnConnect(conn redis.Conn, address string)
+	// OnPublishConnect is called upon each successful connection.
+	OnPublishConnect(conn redis.Conn, address string)
 	// OnPublishError is called upon any error when attempting to publish a message.
 	OnPublishError(err error, channel string, data []byte)
 }
@@ -60,7 +60,7 @@ func NewRedisPublisher(address string, handler PublicationHandler, poolSize, buf
 				if err != nil {
 					return nil, err
 				}
-				handler.OnConnect(conn, address)
+				handler.OnPublishConnect(conn, address)
 				return conn, err
 			},
 		},
