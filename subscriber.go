@@ -328,11 +328,11 @@ func (s *redisSubscriber) reconnectSlot(slot int) {
 		s.slots[slot] = connection
 	}()
 
-	// start the receive loop
-	go connection.receiveLoop()
-
 	// call the callback
 	s.handler.OnConnect(s, conn, s.address, slot)
+
+	// start the receive loop
+	go connection.receiveLoop()
 }
 
 func (s *redisSubscriber) isShutdown() bool {
