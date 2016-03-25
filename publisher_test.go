@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/garyburd/redigo/redis"
 )
@@ -18,6 +19,12 @@ func (h *testPubHandler) OnPublishConnect(conn redis.Conn, address string) {
 	h.mutex.Lock()
 	defer h.mutex.Unlock()
 	h.connections++
+}
+
+func (h *testPubHandler) OnPublishConnectError(err error, nextTime time.Duration) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	h.t.Fatal(err)
 }
 
 func (h *testPubHandler) OnPublishError(err error, channel string, data []byte) {
